@@ -2,6 +2,7 @@
 # Temporary files
 # -------------------------
 tmp/
+Paper
 Old/*.rar
 *.tmp
 *.log
@@ -15,6 +16,7 @@ Old/*.rar
 # Executables
 *.exe
 sdm2025
+sdm2013
 dgrn2020
 
 # -------------------------

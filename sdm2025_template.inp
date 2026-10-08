@@ -1,0 +1,269 @@
+#===============================================================================
+# SDM2025 input template: static geodetic slip inversion with data corrections.
+# Based on SDM2025/InputFile/sdm2025_example_6/sdm2025_tohoku_offsets_euler.inp.
+# Original example: Rongjiang Wang, Beijing, July 6, 2026.
+# GFZ Helmholtz Centre for Geosciences; wang@gfz.de
+#
+# Units are stated below. Internal Cartesian axes: north, east, down.
+# A fault segment contains rectangular slip patches: ns = number of segments;
+# nps = total number of patches. A segment may be curved.
+# nobs = total number of scalar observation rows across all ngd data sets.
+# Run from the SDM repository root and select sdm2025_template.inp.
+# Relative paths are resolved from the program's working directory.
+# Active records reproduce example 6; optional alternatives remain commented.
+# Do not insert blank lines. Full comment lines must start with # in column 1.
+#===============================================================================
+# 1. EARTH MODEL
+# First record: iearth (0 = homogeneous elastic half-space; 1 = layered elastic
+# half-space; 2 = user-provided observation Green's function matrices).
+# The next record depends on iearth:
+#   0: poisson (0 <= poisson < 0.5).
+#   1: grndir green_z green_r green_t (directory and component file basenames).
+#      The code appends .ss, .ds and .cl for source types and adds the
+#      differential layered response to the analytical Okada response.
+#   2: grndir strike_slip_file updip_slip_file.
+#      Each file: one header line, then nobs rows with nps columns, giving
+#      projected observation displacement [m] per unit patch slip [m].
+#      Rows follow data-set order and row order within each file in Section 3;
+#      columns follow segment order and patch order within each segment.
+#      These files replace the observation response; fault stresses still use
+#      a reference homogeneous half-space.
+#-------------------------------------------------------------------------------
+# 0
+# 0.25
+ 1
+ './SDM2025/InputFile/sdm2025_example_2/dgreen/'  'uz'  'ur'  'ut'
+# 2
+# './SDM2025/InputFile/sdm2025_example_3/usr3dgrns/'  'strike_slip_3d_grns.dat'  'thrust_slip_3d_grns.dat'
+#===============================================================================
+# 2. FAULT GEOMETRY AND SLIP CONSTRAINTS
+# First record: idisc (0 = read patch files; 1 = construct patches automatically).
+# Second record: ns (number of fault segments).
+# Then repeat the selected segment block below ns times, in segment order.
+# segment_id is a label only; segments are processed in input order.
+# Constraints shared by both branches:
+#   rake1 rake2 [deg]: lower/upper rake bounds (rake1 <= rake2).
+#   Rake is atan2(up-dip slip, strike slip); equal bounds fix the rake.
+#   maxslip [m]: positive upper bound on each patch's slip magnitude.
+#-------------------------------------------------------------------------------
+# idisc
+    1
+#-------------------------------------------------------------------------------
+# For idisc = 0, each segment has one record:
+#   segment_id rake1 rake2 maxslip inpatches isref
+# Each inpatches file: one header line, then one patch per row with 9 columns:
+#   latitude[deg] longitude[deg] depth[km] pl[m] pw[m]
+#   length[km] width[km] strike[deg] dip[deg]
+# pl/pw are patch-centre coordinates along strike/down dip within the segment,
+# used for neighbour search. They are read in metres without conversion;
+# depth, length and width are converted from kilometres to metres.
+# latitude/longitude/depth specify the reference location selected by isref:
+#   1 = upper-left; 2 = upper-right; 3 = lower-left; 4 = lower-right;
+#   any other value = centre. Left/right are the negative/positive strike ends.
+# Rectangular patch reference locations (original fault illustration):
+#
+#                 north(x)
+#                  /
+#                 / | strike
+#            ref 1-------------------------2
+#                |\          p .            \ W
+#                :-\        i .              \ i
+#                |  \      l .                \ d
+#                :90 \    S .      5           \ t
+#                |-dip\    .                    \ h
+#                :     \  .                      \
+#                       \.) rake                  \
+#          downward(z)  3--------------------------4
+#                          L   e   n   g   t   h
+# Points 1/2 are the upper edge, 3/4 the lower edge, and 5 the centre.
+# Length follows strike; width follows down dip. Positive rake rotates from
+# positive strike slip toward up-dip slip; the output down-dip slip has opposite sign.
+# The same local strike/dip/rake conventions apply to automatically built patches.
+#
+# To select this branch, set idisc = 0 and replace the active ns/segment records
+# below with this commented alternative:
+#   ns
+#   1
+#   segment_id rake1 rake2 maxslip inpatches isref
+#   1           70.0     110.0            60.0   './fault_patches_310.dat'     5
+#-------------------------------------------------------------------------------
+# For idisc = 1, each segment has the following records:
+#   segment_id topdep[km] width[km] mstrike[deg] patchsize[km]
+#   rake1[deg] rake2[deg] maxslip[m]
+#   nft (number of top-edge trace points; at least 2)
+#   nft rows: latitude[deg] longitude[deg] topdip[deg] botdip[deg]
+# topdep is the constant depth of the top edge; width is the down-dip arc length.
+# Trace points are ordered along strike and located at topdep, which may be > 0.
+# mstrike in [0,360] specifies the mean strike; down-dip lines extend
+# perpendicular to this strike. Outside this range it is estimated from the trace.
+# patchsize is the target spacing along the top trace and down-dip arc length.
+# topdip/botdip are endpoint dip angles: 0 < dip < 180.
+# Endpoint dips are interpolated along the top trace. Along each down-dip line,
+# dip varies linearly with arc length, except that a difference <= 0.1 rad
+# uses the constant mean dip. Local patch strike/dip are derived from the nodes.
+#-------------------------------------------------------------------------------
+# ns
+    1
+# segment_id topdep[km] width[km] mstrike[deg] patchsize[km]
+    1    0.0            200.0             -1000.0              20.0
+# rake1[deg] rake2[deg] maxslip[m]
+         70.0           110.0                1000.0
+# nft
+         2
+# latitude[deg] longitude[deg] topdip[deg] botdip[deg]
+         40.7831487771473	144.577148641917	14.0	14.0
+         35.3505099267260	142.978471497558    14.0    14.0
+#===============================================================================
+# 3. OBSERVATION DATA SETS
+# First record: ngd datunit nheader.
+# ngd: number of data sets; datunit: metres per input displacement unit;
+# nheader: number of header lines to skip in each observation file.
+# For each data set, supply two records:
+#   gddata (one file containing scalar displacement observations)
+#   wfm orientation_flag [incidence[deg] azimuth[deg]]
+# Weighting (sdmgetinp/sdmdata): for data set j and scalar row i, let sigma_ij
+# be its uncertainty and wfm_j > 0 its input data-set weight. The code uses
+#   a_j = wfm_j / sum_l(wfm_l)
+#   omega_ij = a_j * sigma_ij^(-2) / sum_k_in_set_j(sigma_kj^(-2))
+#   wf_ij = sqrt(omega_ij).
+# The data term is sum_ij omega_ij*(observed_m - slip_prediction_m - correction_m)^2.
+# Thus sum_i_in_set_j omega_ij = a_j: adding more points does not automatically
+# increase a data set's total weight. Equal wfm values give equal total weights.
+# sigma controls relative point weights within a set; multiplying all sigma in
+# one set by the same constant cancels in this normalization. Scaling all wfm by
+# the same constant also cancels. Use wfm to change the relative influence of sets.
+# No off-diagonal data covariance is read.
+# orientation_flag = 1: fixed direction; provide incidence/azimuth in this record.
+#   Data rows: latitude[deg] longitude[deg] displacement uncertainty
+# orientation_flag = 0: direction varies by row; omit angles from this record.
+#   Data rows: latitude[deg] longitude[deg] displacement uncertainty
+#              incidence[deg] azimuth[deg]
+# Uncertainty must be > 0 and use the same unit as displacement.
+# Incidence is measured from the upward vertical; azimuth is clockwise from north.
+# Projection = u_north*sin(incidence)*cos(azimuth)
+#            + u_east*sin(incidence)*sin(azimuth) + u_up*cos(incidence).
+# Fixed directions: north = (90,0); east = (90,90); up = (0,0).
+# For LOS data, choose angles consistent with the displacement sign in the file.
+#-------------------------------------------------------------------------------
+# ngd datunit nheader
+  3  1.0  0
+# gddata; then wfm orientation_flag incidence[deg] azimuth[deg]
+   './SDM2025/InputFile/GPS/ns.dat'
+  1.00  1   90.0    0.0
+   './SDM2025/InputFile/GPS/ew.dat'
+  1.00  1   90.0   90.0
+   './SDM2025/InputFile/GPS/up.dat'
+  1.00  1    0.0    0.0
+#-------------------------------------------------------------------------------
+# Optional InSAR set with spatially varying LOS angles (not active):
+# To add this fourth set, set ngd = 4 and add these two records after the GPS sets:
+#   './insar_los.dat'
+#   1.00  0
+# The flag 0 reads both angles from each row; do not put fixed angles after it.
+# Example file rows below illustrate syntax only; replace with measured values.
+# With datunit = 1.0, displacement and uncertainty are in metres:
+#   latitude[deg] longitude[deg] displacement uncertainty incidence[deg] azimuth[deg]
+#   38.0000       142.5000       0.10         0.02        23.0           -100.0
+#   38.1000       142.6000       0.12         0.03        24.0           -101.0
+# Keep nheader consistent with the actual file. Add one output filename in
+# Section 6 and extend the correction matrix (and user Green's matrices, if used)
+# by the new observation rows in this same order. The file is not provided here.
+#===============================================================================
+# 4. NON-SEISMIC SIGNAL CORRECTIONS
+# First record: ndpar [corrgrnfile].
+# ndpar = 0: no correction parameters; omit corrgrnfile and all bound records.
+# ndpar > 0: read corrgrnfile, followed by ndpar records of parmin parmax.
+# corrgrnfile: one header line, then nobs rows with ndpar columns.
+# Rows match the observation ordering in Section 3; column j corresponds to
+# correction parameter j and its j-th bound record.
+# Correction at row i = sum_j corrgrn(j,i)*corrpar(j), added to the slip prediction.
+# Choose parameter units consistently: each matrix column must give metres of
+# displacement per parameter unit. Use linearly independent, nonzero columns.
+# Offsets, small block rotations or spatial trends are defined by this matrix;
+# the code does not infer their meaning. Bounds are in the chosen parameter units.
+# This example: columns 1-3 = north/east/up offsets [m]; columns 4-6 = small
+# rotations [rad] about Earth-centred axes through (lat,lon) = (0,0), (0,90), (90,0).
+#-------------------------------------------------------------------------------
+# ndpar corrgrnfile
+  6    './SDM2025/InputFile/sdm2025_example_6/offset_euler_grns.dat'
+# parmin parmax, in matrix-column order
+      -1.0       1.0       !northward, unit = meter
+      -1.0       1.0       !eastward, unit = meter
+      -1.0       1.0       !upward, unit = meter
+  -5.0E-06   5.0E-06       !rotation around x (lat=0, lon=0), unit = radian
+  -5.0E-06   5.0E-06       !rotation around y (lat=0, lon=90), unit = radian
+  -5.0E-06   5.0E-06       !rotation around z (lat=90, lon=0), unit = radian
+#===============================================================================
+# 5. INVERSION PARAMETERS
+# First record: niter zhyrelax.
+# niter > 0: maximum number of projected Landweber iterations.
+# zhyrelax: file of relaxation factors; one number per line, without a header.
+# niter = 0: read an existing slipout file in output format for forward modelling.
+# Keep its geometry and patch order consistent with Section 2; slip columns 8/9
+# are strike/down-dip slip [m]. Correction parameters are set to zero in this mode.
+# Second record: ismooth wei2smo0 izhy.
+# Smoothing (sdmgrnmat):
+#   ismooth = 1: penalize separate along-strike and down-dip second differences
+#     of the two slip components. Each patch supplies four smoothing rows.
+#     Interior stencil is neighbour_left - 2*centre + neighbour_right; the
+#     centre coefficient is -1 if either neighbour in that direction is absent.
+#   ismooth = 2: form second-difference terms from neighbouring patch-centre
+#     shear-stress changes (strike and up-dip components); normal stress is omitted.
+#     These stresses use the reference Okada half-space, also for iearth = 1 or 2.
+# In both modes, rows include sqrt(patch_area) and directional scales
+# patch_area/length^2 or patch_area/width^2; neighbours are within each segment.
+# Correction parameters have zero smoothing columns; their bounds are in Section 4.
+#
+# Smoothing weight (sdmpreinv): q is the internal scaled model vector, M the
+# weighted observation matrix, S the implemented smoothing matrix, and
+# d_w the observed displacement [m] multiplied by wf. The objective is
+#   F(q) = ||M*q - d_w||_2^2 + wei2smo*||S*q||_2^2,
+# with the actual coefficient set once from the projected initial model q_init:
+#   wei2smo = wei2smo0 * ||d_w||_2^2 / ||S*q_init||_2^2.
+# wei2smo0 is this normalized ratio, not the final matrix coefficient or its square.
+# At q_init the smoothing term equals wei2smo0*||d_w||_2^2; for example,
+# wei2smo0 = 0.1 makes it 10% of the weighted observed-data energy.
+# Zero requests no smoothing; negative input is reset to zero. Larger values
+# increase the smoothing penalty for fixed data, geometry and mode settings.
+# The initial smoothing norm must be nonzero for this normalization.
+#
+# Spatial scaling modes (sdmzhy/sdmgrnmat): use only izhy = 0 or 1.
+#   0: zhy(ips) = 1 for every patch; no Zhang spatial scaling or final column
+#      normalization of the smoothing matrix.
+#   1: compute one location-dependent factor per patch from both raw projected
+#      unit-slip responses G_strike and G_updip, before applying data weights:
+#        t_i = sqrt(mean_over_observations(G_strike_i^2 + G_updip_i^2))
+#        zhy_i = t_i / sqrt(mean_over_patches(t_i^2)).
+#      Both slip components share this factor: q_i = zhy_i*slip_i, and the
+#      observation columns are divided by zhy_i. Smoothing entries for target
+#      patch j and source patch i are multiplied by zhy_j/zhy_i. The code then
+#      additionally normalizes each smoothing column to unit L2 norm.
+# This mode changes the spatial smoothing penalty; it is not just a step-size
+# setting or a prescribed depth weight. Each t_i must be nonzero.
+# The code applies it for either ismooth mode; stress smoothing does not disable it.
+# With ndpar > 0, keep izhy = 0: current column normalization divides the zero
+# correction columns by zero. This example therefore uses izhy = 0.
+# zhyrelax is independent: its file supplies iteration-step factors even when
+# izhy = 0. These factors are cycled; they are not the patch weights zhy(ips).
+#-------------------------------------------------------------------------------
+# niter zhyrelax
+ 500000  './SDM2025/InputFile/sdm2025_example_6/ZHYRELAX.txt'
+# ismooth wei2smo0 izhy
+ 1  0.1  0
+#===============================================================================
+# 6. OUTPUT FILES
+# First record: slipout (combined slip model for all segments).
+# Second record: ngd prediction filenames in the data-set order of Section 3,
+# followed by parout only when ndpar > 0 (correction parameters in column order).
+# Per-segment models sXX_<slipout> and iteration log log_<slipout> are also written.
+# These output paths are relative to the SDM root, the working directory here.
+# Prediction files contain latitude, longitude, observation, residual, prediction,
+# correction. Displacements use the input data unit; prediction is from slip only.
+# The written residual is observation - prediction; subtract correction to obtain
+# the residual used in the inversion statistics.
+#-------------------------------------------------------------------------------
+# slipout
+ 'slip_model.dat'
+# gdout(1:ngd) parout
+ 'output_un.dat'   'output_ue.dat'   'output_uz.dat' 'output_offsets_euler.dat'
+#================================end of input===================================
