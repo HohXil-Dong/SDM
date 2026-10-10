@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Generate SDM's NEU-offset and geocentric small-rotation matrix.
 
-Usage: python3 make_offset_euler.py stations.dat offset_euler_grns.dat
+Usage: python3 Script/make_offset_euler.py input.dat output.dat
 Input: latitude longitude [deg], north/east positive; # comments allowed.
+Use --lat-col/--lon-col for one-based column numbers (defaults: 1/2),
+and --skiprows for header lines (default: 0). Blank lines and other columns
+are ignored. The output must differ from the input.
 Output: one header line, then a (3 * nstations, 6) matrix.
 Rows: all north, all east, all up; station order follows the input in each block.
 Columns: b_N, b_E, b_U [m], omega_X, omega_Y, omega_Z [rad].
@@ -13,6 +16,7 @@ Requires NumPy. Matrix entries are unweighted metres per parameter unit.
 """
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 
@@ -53,11 +57,25 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("stations", help="Two-column latitude/longitude file [deg]")
-    parser.add_argument("output", help="Output correction-matrix file")
+    parser.add_argument("input", type=Path, help="Station coordinate file [deg]")
+    parser.add_argument("output", type=Path, help="Output correction-matrix file")
+    parser.add_argument("--lat-col", type=int, default=1, metavar="COL",
+                        help="Latitude column, counted from 1 (default: 1)")
+    parser.add_argument("--lon-col", type=int, default=2, metavar="COL",
+                        help="Longitude column, counted from 1 (default: 2)")
+    parser.add_argument("--skiprows", type=int, default=0, metavar="N",
+                        help="Number of physical header lines to skip (default: 0)")
     args = parser.parse_args()
+    if min(args.lat_col, args.lon_col) < 1 or args.lat_col == args.lon_col:
+        parser.error("--lat-col and --lon-col must be positive and different")
+    if args.skiprows < 0:
+        parser.error("--skiprows must be nonnegative")
+    if (args.output.resolve() == args.input.resolve()
+            or (args.output.exists() and args.output.samefile(args.input))):
+        raise ValueError("The output must differ from the input coordinate file")
 
-    stations = np.loadtxt(args.stations, ndmin=2)
+    stations = np.loadtxt(args.input, ndmin=2, skiprows=args.skiprows,
+                          usecols=(args.lat_col - 1, args.lon_col - 1))
     matrix = offset_euler_matrix(stations)
     np.savetxt(
         args.output,

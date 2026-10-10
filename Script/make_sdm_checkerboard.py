@@ -2,9 +2,14 @@
 r"""Create an SDM checkerboard slip model on the existing fault patches.
 
 Example, with slip in metres and checker cell sizes in kilometres:
-    python Script/make_sdm_checkerboard.py slip_model.dat \
-        -o checkerboard_9km.dat --cell-size 9 9 \
+    python Script/make_sdm_checkerboard.py slip_model.dat checkerboard_9km.dat \
+        --cell-size 9 9 \
         --high-slip 1 --low-slip 0 --rake 0
+
+Input rows must have at least 13 columns in SDM order; additional columns
+are preserved. Use --skiprows for header lines (default: 1). Header text
+is not interpreted and is preserved. SDM forward modeling requires exactly
+one header line in the output.
 
 x_local_km is distance along the curved top trace; y_local_km is distance
 down dip. Each blank-line-separated segment uses its own local coordinates.
@@ -16,8 +21,8 @@ patches are neither split nor moved to make cell edges fit the patch mesh.
 
 SDM's file convention is slp_strk = S*cos(rake), slp_ddip = -S*sin(rake).
 Only these two columns, slp_am_m and rake_deg are replaced. Other tokens,
-row order, the header and segment separators are preserved. Stress columns
-remain from the input model and MUST be recomputed by SDM forward modeling.
+row order, the header and segment separators are preserved. Stress columns,
+if present, remain from the input and MUST be recomputed by SDM forward modeling.
 The output must differ from the input. See checkerboard_guide_zh.md beside
 this script for the forward and inversion workflow. NumPy is the only dependency.
 """
@@ -32,29 +37,31 @@ import numpy as np
 COLUMNS = (
     "lat_deg", "lon_deg", "depth_km", "x_local_km", "y_local_km",
     "length_km", "width_km", "slp_strk_m", "slp_ddip_m", "slp_am_m",
-    "strike_deg", "dip_deg", "rake_deg", "sig_stk_MPa", "sig_ddi_MPa",
-    "sig_nrm_MPa", "sig_cmb_MPa",
+    "strike_deg", "dip_deg", "rake_deg",
 )
 SLIP_COLUMNS = (7, 8, 9, 12)
 
 
-def read_model(filename):
-    """Read the SDM2025 table, keeping source lines and explicit segments.
+def read_model(filename, skiprows=1):
+    """Read an SDM table, keeping source lines and explicit segments.
 
     Return the original lines and a list of (line_indices, numeric_rows).
     Line indices are zero based; numeric rows remain in their original order.
-    The positional schema is checked because SDM reads the first nine
-    columns by position, regardless of the column labels.
+    The first 13 columns follow COLUMNS; extra columns are preserved.
+    Header text is not checked because SDM reads data columns by position.
     """
     lines = filename.read_text().splitlines(keepends=True)
-    if not lines or tuple(lines[0].split()) != COLUMNS:
-        raise ValueError("expected the 17-column SDM2025 slip-model header")
-
     blocks = [[]]
-    for index, line in enumerate(lines[1:], 1):
+    ncolumns = None
+    for index, line in enumerate(lines[skiprows:], skiprows):
         if line.strip():
-            if len(line.split()) != len(COLUMNS):
-                raise ValueError(f"line {index + 1}: expected 17 columns")
+            count = len(line.split())
+            if ncolumns is None:
+                if count < len(COLUMNS):
+                    raise ValueError(f"line {index + 1}: expected at least 13 columns")
+                ncolumns = count
+            if count != ncolumns:
+                raise ValueError(f"line {index + 1}: expected {ncolumns} columns")
             blocks[-1].append(index)
         elif blocks[-1]:
             blocks.append([])
@@ -130,8 +137,10 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("filename", nargs="?", type=Path, default=Path("slip_model.dat"))
-    parser.add_argument("-o", "--output", type=Path, default=Path("checkerboard_model.dat"))
+    parser.add_argument("input", type=Path, help="Slip model in SDM column order")
+    parser.add_argument("output", type=Path, help="Output checkerboard model")
+    parser.add_argument("--skiprows", type=int, default=1, metavar="N",
+                        help="Number of physical header lines to preserve and skip (default: 1)")
     parser.add_argument("--cell-size", type=float, nargs=2, default=(9.0, 9.0),
                         metavar=("STRIKE_KM", "DIP_KM"),
                         help="checker cell sizes along strike and down dip (default: 9 9)")
@@ -147,11 +156,13 @@ def main():
     parser.add_argument("--phase", type=int, choices=(0, 1), default=0,
                         help="0: even checker indices have high slip; 1: swap (default: 0)")
     args = parser.parse_args()
+    if args.skiprows < 0:
+        parser.error("--skiprows must be nonnegative")
 
-    if (args.output.resolve() == args.filename.resolve()
-            or (args.output.exists() and args.output.samefile(args.filename))):
+    if (args.output.resolve() == args.input.resolve()
+            or (args.output.exists() and args.output.samefile(args.input))):
         raise ValueError("the output must differ from the input slip model")
-    lines, segments = read_model(args.filename)
+    lines, segments = read_model(args.input, args.skiprows)
     reports = []
     for number, (indices, model) in enumerate(segments, 1):
         updated, cells, high = make_checkerboard(
@@ -172,7 +183,7 @@ def main():
           f"slip={args.high_slip:g}/{args.low_slip:g} m; rake={args.rake:g} deg")
     for report in reports:
         print(report)
-    print("Stress columns are retained from the input; recompute them with SDM forward modeling.")
+    print("Stress columns, if present, are retained; recompute them with SDM forward modeling.")
 
 
 if __name__ == "__main__":
