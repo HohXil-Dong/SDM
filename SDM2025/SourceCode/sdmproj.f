@@ -38,11 +38,10 @@ c
             slpmdl(1,ips)=slp*racs1
             slpmdl(2,ips)=slp*rass1
           else if(slp.gt.0.d0.and.rake2(is)-rake1(is).lt.360.d0)then
+c           ATAN2 gives signed rake; wrap only for [0,360].
             ra=datan2(slpmdl(2,ips),slpmdl(1,ips))
             if(rake360(is).gt.0.d0)then
               ra=dmod(ra+2.d0*PI,2.d0*PI)
-            else
-              ra=dmod(ra-2.d0*PI,2.d0*PI)
             endif
             if(ra/DEG2RAD.lt.rake1(is).or.ra/DEG2RAD.gt.rake2(is))then
               racs=dcos(ra)
