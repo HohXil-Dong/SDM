@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Save one 3-D view and one fault-plane view per SDM segment.
+"""Save slip figures, a patch-corner table and separate segment traces.
 
 SDM separates segments with blank lines in its combined slip output.
-Coordinates and patch dimensions are in km; slip amplitude is in m.
+Longitude/latitude are in degrees; depth, local coordinates and patch
+dimensions are in km; slip amplitude is in m.
 
 Examples (run from the model directory):
-    python plot_sdm_slip.py slip_model.dat
-    python plot_sdm_slip.py slip_model.dat -o slip.pdf --title "Maduo"
-    python plot_sdm_slip.py slip_model.dat --vmax 7 --cmap rainbow --elev 23 --azim -105
+    python plot_slip.py slip_model.dat
+    python plot_slip.py slip_model.dat -o slip --title "Maduo"
+    python plot_slip.py slip_model.dat -o slip --format png
+    python plot_slip.py slip_model.dat --vmax 7 --cmap rainbow --elev 23 --azim -105
 
-The output filename supplies the stem and format: slip.pdf produces
-slip_3d.pdf, slip_s01.pdf, slip_s02.pdf, etc. No title is added by default.
+The output prefix has no image extension: -o slip produces slip_3d.pdf,
+slip_s01.pdf, slip_s02.pdf, etc. PDF is the default; --format png selects PNG.
+No title is added by default. All segment views share one inches/km scale.
+Geometry is saved beside the input model as <model>_patches.dat (12 columns,
+UL/UR/LR/LL longitude, latitude, positive-down depth) and <model>_trace.gmt
+(two-column longitude/latitude projection of each segment's top patch edges).
 """
 
 import argparse
@@ -27,6 +33,7 @@ REQUIRED = (
     "lat_deg", "lon_deg", "depth_km", "x_local_km", "y_local_km",
     "length_km", "width_km", "slp_am_m", "strike_deg", "dip_deg",
 )
+RADIUS_KM = 6371.0088
 
 
 def read_model(filename):
@@ -62,10 +69,9 @@ def read_model(filename):
 
 def local_xy(lon, lat):
     """Spherical local east/north in km, relative to min(lon), mean(lat)."""
-    radius_km = 6371.0088
     lon0, lat0 = float(np.min(lon)), float(np.mean(lat))
-    east = radius_km * np.cos(np.deg2rad(lat0)) * np.deg2rad(lon - lon0)
-    north = radius_km * np.deg2rad(lat - lat0)
+    east = RADIUS_KM * np.cos(np.deg2rad(lat0)) * np.deg2rad(lon - lon0)
+    north = RADIUS_KM * np.deg2rad(lat - lat0)
     return east, north
 
 
@@ -89,45 +95,95 @@ def corners(east, north, depth, length, width, strike, dip):
                      centre + u + v, centre - u + v])
 
 
-def plot_3d(model, norm, cmap, title, elev, azim):
+def patch_vertices(model):
+    """Return UL/UR/LR/LL east, north, elevation corners in model row order."""
     east, north = local_xy(model["lon_deg"], model["lat_deg"])
-    patches = np.array([
+    return np.array([
         corners(e, n, row["depth_km"], row["length_km"], row["width_km"],
                 row["strike_deg"], row["dip_deg"])
         for e, n, row in zip(east, north, model, strict=True)
     ])
+
+
+def geographic_vertices(model, patches):
+    """Invert local_xy: longitude/latitude in degrees, positive-down depth in km."""
+    lon0, lat0 = float(np.min(model["lon_deg"])), float(np.mean(model["lat_deg"]))
+    vertices = patches.copy()
+    vertices[:, :, 0] = lon0 + np.rad2deg(
+        patches[:, :, 0] / (RADIUS_KM * np.cos(np.deg2rad(lat0)))
+    )
+    vertices[:, :, 1] = lat0 + np.rad2deg(patches[:, :, 1] / RADIUS_KM)
+    vertices[:, :, 2] = -patches[:, :, 2]
+    return vertices
+
+
+def write_geometry(filename, segments, vertices):
+    """Write one 12-column row per patch and independent two-column top traces."""
+    patch_file = filename.with_name(f"{filename.stem}_patches.dat")
+    trace_file = filename.with_name(f"{filename.stem}_trace.gmt")
+    columns = " ".join(
+        f"lon_{corner}[deg] lat_{corner}[deg] depth_{corner}[km]"
+        for corner in ("UL", "UR", "LR", "LL")
+    )
+    with patch_file.open("w") as table, trace_file.open("w") as trace:
+        table.write(f"# {columns}; depth positive downward\n")
+        offset = 0
+        for number, segment in enumerate(segments, 1):
+            segment_vertices = vertices[offset:offset + len(segment)]
+            if number > 1:
+                table.write("\n")
+            np.savetxt(table, segment_vertices.reshape(-1, 12), fmt="%.10f")
+
+            top = np.flatnonzero(segment["y_local_km"] == segment["y_local_km"].min())
+            top = top[np.argsort(segment["x_local_km"][top], kind="stable")]
+            trace.write(f"> segment={number}\n")
+            np.savetxt(trace, segment_vertices[top, :2, :2].reshape(-1, 2),
+                       fmt="%.10f")
+            offset += len(segment)
+    print(patch_file)
+    print(trace_file)
+
+
+def plot_3d(model, patches, norm, cmap, title, elev, azim):
+    vertices = geographic_vertices(model, patches)
     fig = plt.figure(figsize=(10, 5.5))
     ax = fig.add_subplot(projection="3d")
     poly = Poly3DCollection(
-        patches, array=model["slp_am_m"], norm=norm, cmap=cmap,
+        vertices, array=model["slp_am_m"], norm=norm, cmap=cmap,
         edgecolors=(0, 0, 0, 0.18), linewidths=0.18,
     )
     ax.add_collection3d(poly)
 
-    xyz = patches.reshape(-1, 3)
-    ranges = np.ptp(xyz, axis=0)
-    pad = 0.02 * ranges[0]
-    ax.set_xlim(xyz[:, 0].min() - pad, xyz[:, 0].max() + pad)
-    ax.set_ylim(xyz[:, 1].min() - pad, xyz[:, 1].max() + pad)
-    zticks = np.arange(-10 * np.ceil(-xyz[:, 2].min() / 10), 1, 10)
-    ax.set_zticks(zticks, labels=[f"{abs(z):g}" for z in zticks])
-    ax.set_zlim(xyz[:, 2].min() - 1, 1)
+    xyz = vertices.reshape(-1, 3)
+    # Keep the display proportions in km, even though the horizontal axes use degrees.
+    ranges = np.ptp(patches.reshape(-1, 3), axis=0)
+    pad_km = 0.02 * max(ranges[:2])
+    lat0 = float(np.mean(model["lat_deg"]))
+    lon_pad = np.rad2deg(pad_km / (RADIUS_KM * np.cos(np.deg2rad(lat0))))
+    lat_pad = np.rad2deg(pad_km / RADIUS_KM)
+    ax.set_xlim(xyz[:, 0].min() - lon_pad, xyz[:, 0].max() + lon_pad)
+    ax.set_ylim(xyz[:, 1].min() - lat_pad, xyz[:, 1].max() + lat_pad)
+    ax.set_zticks(np.arange(0, 10 * np.ceil(xyz[:, 2].max() / 10) + 1, 10))
+    ax.set_zlim(xyz[:, 2].max() + 1, -1)
     ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(5))
     ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(3))
-    ax.set_xlabel("East (km)", labelpad=10)
-    ax.set_ylabel("North (km)", labelpad=10)
+    ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+    ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+    ax.set_xlabel("Longitude (°)", labelpad=10)
+    ax.set_ylabel("Latitude (°)", labelpad=10)
     ax.set_zlabel("Depth (km)", labelpad=6)
     ax.set_title(title)
     ax.view_init(elev=elev, azim=azim)
-    ax.set_box_aspect((ranges[0], max(ranges[1], 0.12 * ranges[0]), ranges[2]))
-    fig.colorbar(poly, ax=ax, orientation="horizontal", shrink=0.65,
+    ax.set_box_aspect((max(ranges[0], 0.12 * ranges[1]),
+                       max(ranges[1], 0.12 * ranges[0]), max(ranges[2], 2)))
+    fig.colorbar(poly, ax=ax, location="right", orientation="vertical", shrink=0.65,
                  pad=0.08, label="Slip (m)")
     return fig
 
 
-def plot_plane(segment, norm, cmap, title):
-    """Use the segment's own along-strike/down-dip coordinates, without padding."""
-    patches = np.array([
+def plane_vertices(segment):
+    """Return rectangles in the segment's existing local coordinates."""
+    return np.array([
         [(x - length / 2, y - width / 2), (x + length / 2, y - width / 2),
          (x + length / 2, y + width / 2), (x - length / 2, y + width / 2)]
         for x, y, length, width in zip(
@@ -135,13 +191,20 @@ def plot_plane(segment, norm, cmap, title):
             segment["length_km"], segment["width_km"], strict=True,
         )
     ])
+
+
+def plot_plane(segment, patches, norm, cmap, title, scale):
+    """Draw one segment using the inches/km scale shared by all segments."""
     xy = patches.reshape(-1, 2)
     xmin, ymin = xy.min(axis=0)
     xmax, ymax = xy.max(axis=0)
     length, width = xmax - xmin, ymax - ymin
-    size = 8 / max(length, width)
-    fig, ax = plt.subplots(figsize=(length * size + 1, width * size + 1.4),
-                           layout="constrained")
+    plot_width, plot_height = length * scale, width * scale
+    fig_width, fig_height = plot_width + 1.45, plot_height + 0.7
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    # Fixed physical margins keep text and colorbars from rescaling the patch grid.
+    ax = fig.add_axes([0.45 / fig_width, 0.35 / fig_height,
+                       plot_width / fig_width, plot_height / fig_height])
     poly = PolyCollection(
         patches, array=segment["slp_am_m"], norm=norm, cmap=cmap,
         edgecolors=(0, 0, 0, 0.15), linewidths=0.15,
@@ -150,11 +213,11 @@ def plot_plane(segment, norm, cmap, title):
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymax, ymin)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Along strike (km)")
-    ax.set_ylabel("Down dip (km)")
     ax.set_title(title)
-    fig.colorbar(poly, ax=ax, orientation="horizontal", aspect=40,
-                 pad=0.08, label="Slip (m)")
+    cax = fig.add_axes([(0.45 + plot_width + 0.2) / fig_width,
+                        (0.35 + 0.175 * plot_height) / fig_height,
+                        0.12 / fig_width, 0.65 * plot_height / fig_height])
+    fig.colorbar(poly, cax=cax, orientation="vertical", label="Slip (m)")
     return fig
 
 
@@ -170,7 +233,10 @@ def main():
     )
     parser.add_argument("filename", nargs="?", type=Path, default=Path("slip_model.dat"),
                         help="SDM model with blank lines separating segments")
-    parser.add_argument("-o", "--output", type=Path, help="output filename stem and format")
+    parser.add_argument("-o", "--output", type=Path,
+                        help="output filename prefix without an image extension")
+    parser.add_argument("--format", choices=("pdf", "png"), default="pdf",
+                        help="figure format (default: pdf)")
     parser.add_argument("--title", default="", help="optional title for each figure")
     parser.add_argument("--vmax", type=float,
                         help="colorbar maximum in metres (default: model maximum)")
@@ -178,6 +244,10 @@ def main():
     parser.add_argument("--elev", type=float, default=23, help="3-D elevation in degrees")
     parser.add_argument("--azim", type=float, default=-105, help="3-D azimuth in degrees")
     args = parser.parse_args()
+    if args.output is not None and not args.output.name:
+        parser.error("-o expects a nonempty filename prefix")
+    if args.output is not None and args.output.suffix.lower() in (".pdf", ".png"):
+        parser.error("-o expects a prefix without .pdf/.png; select --format instead")
 
     segments = read_model(args.filename)
     model = np.concatenate(segments)
@@ -186,16 +256,20 @@ def main():
         raise ValueError("--vmax must be finite and positive")
     norm = mpl.colors.Normalize(0, vmax, clip=True)
     cmap = mpl.colormaps[args.cmap]
-    output = args.output or args.filename.with_suffix(".png")
+    output = args.output or args.filename.with_suffix("")
     output.parent.mkdir(parents=True, exist_ok=True)
     mpl.rcParams.update({"font.size": 9, "axes.linewidth": 0.8,
                          "xtick.direction": "out", "ytick.direction": "out"})
 
-    fig = plot_3d(model, norm, cmap, args.title, args.elev, args.azim)
-    save_figure(fig, output.with_name(f"{output.stem}_3d{output.suffix}"))
-    for number, segment in enumerate(segments, 1):
-        fig = plot_plane(segment, norm, cmap, args.title)
-        save_figure(fig, output.with_name(f"{output.stem}_s{number:02d}{output.suffix}"))
+    patches = patch_vertices(model)
+    write_geometry(args.filename, segments, geographic_vertices(model, patches))
+    fig = plot_3d(model, patches, norm, cmap, args.title, args.elev, args.azim)
+    save_figure(fig, output.with_name(f"{output.name}_3d.{args.format}"))
+    planes = [plane_vertices(segment) for segment in segments]
+    scale = 8 / max(np.ptp(plane.reshape(-1, 2), axis=0).max() for plane in planes)
+    for number, (segment, plane) in enumerate(zip(segments, planes, strict=True), 1):
+        fig = plot_plane(segment, plane, norm, cmap, args.title, scale)
+        save_figure(fig, output.with_name(f"{output.name}_s{number:02d}.{args.format}"))
 
 
 if __name__ == "__main__":
