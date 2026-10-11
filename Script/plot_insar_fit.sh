@@ -34,6 +34,25 @@ Units/range/color scales use the configuration above; no displacement conversion
 EOF
 }
 
+read_insar_fit() {
+    # Output: lon lat observation fit residual; displacement units/sign stay unchanged.
+    # SDM's residual column excludes correction, so calculate observation - fit.
+    awk '
+    function fail(message) { print "Error: " FILENAME ": " message > "/dev/stderr"; exit 1 }
+    NR==1 {next}
+    {
+        if (NF!=6) fail("expected six columns at input line " NR)
+        for (i=1; i<=NF; i++)
+            if ($i !~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/)
+                fail("nonnumeric value at input line " NR)
+        fit=$5+$6
+        printf "%.5f %.5f %.10g %.10g %.10g\n", $2,$1,$3,fit,$3-fit
+        points++
+    }
+    END { if (!points) fail("no InSAR data") }
+    ' "$1"
+}
+
 while getopts ':i:o:h' option; do
     case "$option" in
         i) INPUT="$OPTARG" ;;
@@ -70,22 +89,7 @@ if [[ -n "$FAULT_PATCHES" ]]; then
     ' "$FAULT_PATCHES" > "$TMP/patches.xy"
 fi
 
-# Keep original coordinates, units, point order and observation sign; column 4 in
-# the SDM output excludes correction, so recompute the inversion residual.
-awk '
-function fail(message) { print "Error: " message > "/dev/stderr"; exit 1 }
-NR==1 {next}
-{
-    if (NF!=6) fail("expected six columns at input line " NR)
-    for (i=1; i<=NF; i++)
-        if ($i !~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/)
-            fail("nonnumeric value at input line " NR)
-    fit=$5+$6
-    printf "%.5f %.5f %.10g %.10g %.10g\n", $2,$1,$3,fit,$3-fit
-    points++
-}
-END { if (!points) fail("no InSAR data") }
-' "$INPUT" > "$TMP/fit.dat"
+read_insar_fit "$INPUT" > "$TMP/fit.dat"
 mkdir -p "$(dirname "$OUT")"
 
 columns=(2 3 4)              # Zero-based columns: Observation Fit Residual.

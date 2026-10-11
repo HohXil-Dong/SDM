@@ -4,9 +4,9 @@
 
 ## 1. Maduo 测试设置
 
-文中六组 GPS、150 条观测及末尾数值记录的是 2026-10-10 首次验证。当前模板已增加两组 InSAR，实际数据集由 `ngd` 指定，程序始终处理全部数据集。
+文中 Maduo 路径、六组 GPS、150 条观测及末尾数值是 2026-10-10 的历史试验记录。当前仓库不包含 `Maduo/` 数据目录，以下 Maduo 命令需要自行准备对应文件。实际数据集由模板的 `ngd` 指定，程序处理全部固定方向或逐点方向数据集，包括 GPS 和 InSAR。现有脚本及文件格式见 [README.md](README.md)。
 
-程序读取 [sdm2025_template.inp](../Maduo/Checkboard/sdm2025_template.inp) 和 [checkerboard_15km.dat](../Maduo/Checkboard/checkerboard_15km.dat)。模板指定的原反演模型 `Maduo/Checkboard/slip_model.dat` 用于核对几何、patch 数目和行序；已复制的 `ZHYRELAX.txt` 原样用于反演。
+本例读取 `Maduo/Checkboard/sdm2025_template.inp` 和 `Maduo/Checkboard/checkerboard_15km.dat`。模板指定的原反演模型 `Maduo/Checkboard/slip_model.dat` 用于核对几何、patch 数目和行序；已复制的 `ZHYRELAX.txt` 原样用于反演。
 
 **现有棋盘实际为走向 15 km × 倾向 9 km、滑动 3 m / 0 m、非零区 rake 15°。文件名中的 15 km 不表示两个方向均为 15 km。自动化程序使用这个模型，不重新生成棋盘。**
 
@@ -67,7 +67,7 @@ python Script/run_sdm_checkerboard.py \
 
 只调整 correction、迭代次数及流程所需文件名：
 
-1. 开始前检查执行文件、观测、已有反演模型、地球模型文件、patch 文件（`idisc=0` 时）、松弛因子和所有生成文件名。逐段核对棋盘与已有反演模型的几何、patch 数目及行序。文件名碰撞、覆盖原文件、输出符号链接或硬链接立即报错。
+1. 开始前读取观测、已有反演模型和松弛因子，核对执行文件及模板依赖的路径，包括地球模型文件和 patch 文件（`idisc=0` 时）。逐段核对棋盘与已有反演模型的几何、patch 数目及行序。生成文件名重复或与原文件路径冲突立即报错；旧生成文件先删除，再写入新结果。
 2. 清理本次测试的旧生成文件，重新复制原始棋盘。不能复用上次已被正演重写的工作模型。
 3. 正演迭代次数设为零，所有数据集生成预测；SDM 覆盖工作模型并重算应力列。
 4. 同时检查退出码、正常完成标志、模型和全部输出文件。Fortran `STOP` 可能返回零，不能仅依赖退出码。检查几何、滑动、观测数及坐标行序；坐标允许五位小数输出造成的约 `5×10⁻⁶` 度舍入误差。
@@ -120,7 +120,7 @@ SDM 还会写 `s01_work_...`、`s02_work_...`、`s01_invwork_...`、`s02_invwork
 
 拟合输出六列为纬度、经度、观测、残差、prediction、correction。本流程两阶段第六列均为零，合成观测采用第五列。另行设计非零修正测试时需显式外部加入 `C*p_true`，再另行配置联合反演，不属于本程序。修正矩阵的位移单位为米，加回文件单位时应除以 `datunit`。
 
-[make_offset_euler.py](make_offset_euler.py) 当前生成北、东、上三组的六参数矩阵，不能直接替代本模板六组水平观测所需的五参数矩阵。使用前须明确单位、列含义及数据集和测点行序。
+[make_offset_euler.py](make_offset_euler.py) 使用六个参数：北、东、上常数偏移（m）及三个地心小旋转（rad）。`--mode gps` 输出所有北、所有东、所有上的 `3N×6` 矩阵；`--mode insar` 用六列 SDM 观测中的角度投影成 `N×6` 矩阵。这些矩阵不能直接替代本例六组水平观测所需的五参数矩阵。使用前须使矩阵行序与模板的数据集和测点行序一致，并同步参数数量及边界。
 
 ## 5. 高斯噪声与复现
 
@@ -225,13 +225,19 @@ slp_ddip_m = -S*sin(rake)
 
 ## 9. 验证与无噪声结果
 
+当前仓库没有 `test_run_sdm_checkerboard.py`，不能用不存在的测试文件宣称测试通过。基本语法与帮助检查可用：
+
 ~~~bash
-python -m unittest discover -s Script -p test_run_sdm_checkerboard.py
+python -m py_compile Script/insar_to_sdm.py Script/make_offset_euler.py \
+    Script/make_sdm_checkerboard.py Script/run_sdm_checkerboard.py Script/plot_slip.py
+bash -n Script/plot_gps_fit.sh
+bash -n Script/plot_insar_fit.sh
+python Script/run_sdm_checkerboard.py --help
 ~~~
 
-测试覆盖全部数据集、配置保护、四/六列和表头换行保护、舍入和错位、噪声标准差及种子复现、面积权重手算、方向错误、零区泄漏、不可计算项、文件冲突、原文件保护、零退出却未完成、缺失输出和失败重跑旧结果清理。小型原生 SDM 样例包含四个 patch、两个数据集、四条观测，完成带噪声正演与反演；缺少执行文件时跳过原生样例。
+语法检查不验证科学结果。数值验证应在独立目录运行已知棋盘，比较正演预测、合成观测、恢复模型和两个 CSV；检查原文件未变、`K=0` 不加噪声、同种子复现，以及失败后没有复用旧结果。四列固定方向与六列逐点方向均应覆盖；恢复指标的定义和单位见第 6、7 节。
 
-2026-10-10 对当前 Maduo 完成无噪声运行（`K=0, seed=0`），六组 150 条观测全部参与，模板、棋盘、观测、松弛文件及 Inv 文件等 43 个原始文件的 SHA-256 未改变。
+以下保留 2026-10-10 Maduo 无噪声运行的历史记录（`K=0, seed=0`）：六组 150 条观测全部参与，模板、棋盘、观测、松弛文件及 Inv 文件等 43 个原始文件的 SHA-256 未改变。该记录不是当前仓库自带的可运行测试。
 
 | 全断层指标 | 数值 |
 | --- | ---: |

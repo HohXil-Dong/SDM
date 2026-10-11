@@ -28,6 +28,8 @@ MODEL_METRICS = (
     "vector_rmse_m", "relative_vector_error", "amplitude_correlation",
     "nonzero_amplitude_recovery", "zero_leakage_rms_m", "normalized_leakage",
 )
+MODEL_CSV = "invwork_resolution_metrics.csv"
+FIT_CSV = "invwork_dataset_fit.csv"
 
 
 @dataclass
@@ -55,9 +57,16 @@ class Template:
     original_files: list
 
 
+def check_sdm_filename(name):
+    """SDM uses character*80 filenames, quoted in its input records."""
+    if len(os.fsencode(name)) > 80 or any(c in name for c in "'\"\n\r"):
+        raise ValueError(f"Invalid SDM filename: {name}")
+
+
 def parse_template(path):
     """Read records in sdmgetinp.f order; keep scientific records unchanged."""
-    records = [line for line in path.read_text().splitlines()
+    # Keep legacy comment bytes until comments/correction bounds are discarded.
+    records = [line for line in path.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
                if line.strip() and not line.lstrip().startswith("#")]
     fields = [shlex.split(line, comments=False) for line in records]
     iearth, idisc, ns = int(fields[0][0]), int(fields[2][0]), int(fields[3][0])
@@ -111,14 +120,16 @@ def parse_template(path):
     if ndpar < 0 or len(output_names) != ngd + bool(ndpar):
         raise ValueError("Invalid correction/output records")
     filenames.extend([relaxation, slipout, *output_names, *(d.filename for d in datasets)])
-    # SDM uses character*80 filenames and Fortran quoted strings.
-    if any(len(os.fsencode(name)) > 80 or any(c in name for c in "'\"\n\r")
-           for name in filenames):
-        raise ValueError("Invalid SDM filename")
+    for name in filenames:
+        check_sdm_filename(name)
     original_files.extend(Path(name) for name in output_names)
-    return Template(prefix, observation_record, datasets, ns, datunit, nheader,
-                    niter, relaxation, smoothing, slipout, output_names[:ngd],
-                    dependencies, original_files)
+    return Template(
+        prefix=prefix, observation_record=observation_record, datasets=datasets,
+        ns=ns, datunit=datunit, nheader=nheader, niter=niter,
+        relaxation=relaxation, smoothing=smoothing, slipout=slipout,
+        gdout=output_names[:ngd], dependencies=dependencies,
+        original_files=original_files,
+    )
 
 
 def render_template(template, niter, inputs, slipout, outputs):
@@ -260,11 +271,10 @@ def check_output_paths(directory, generated, protected):
         raise ValueError("Duplicate output filenames")
     originals = {path.resolve(strict=True) for path in protected}
     for name in generated:
+        check_sdm_filename(name)
         path = directory / name
-        if (len(os.fsencode(name)) > 80 or any(c in name for c in "'\"\n\r")
-                or Path(name).name != name or path.is_symlink() or path.resolve() in originals
-                or (path.exists() and (not path.is_file() or path.stat().st_nlink > 1))):
-            raise ValueError(f"Unsafe output: {path}")
+        if Path(name).name != name or path.resolve() in originals:
+            raise ValueError(f"Output conflicts with a source file or directory: {path}")
 
 
 def run_sdm(executable, directory, config, logfile, outputs):
@@ -284,10 +294,33 @@ def run_sdm(executable, directory, config, logfile, outputs):
             print(f"SDM: {line.strip()}", flush=True)
 
 
+def write_reports(directory, model_rows, data_rows, noise_scale, seed):
+    """Write the two metric tables and print the same quantities for inspection."""
+    for row in model_rows + data_rows:
+        row.update(noise_scale=noise_scale, seed=seed)
+    for filename, rows in ((MODEL_CSV, model_rows), (FIT_CSV, data_rows)):
+        with (directory / filename).open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+    for row in model_rows:
+        label = "All segments" if row["scope"] == "all" else f"Segment {row['segment_index']}"
+        values = "; ".join(f"{key}={row[key]:.6g}" if row[key] is not None
+                           else f"{key}=N/A" for key in MODEL_METRICS)
+        print(f"{label}: patches={row['patch_count']}, area={row['area_km2']:.6g} km^2; {values}")
+    for row in data_rows:
+        print(f"{row['dataset_name']}: n={row['observation_count']}, "
+              f"displacement WRMS={row['displacement_wrms_m']:.6g} m")
+    print(f"Resolution metrics: {directory / MODEL_CSV}\nDataset fit: {directory / FIT_CSV}")
+
+
 def run_checkerboard(template_path, truth_path, executable, noise_scale=0.0, seed=0):
-    if (not np.isfinite(noise_scale) or noise_scale < 0
-            or not isinstance(seed, (int, np.integer)) or seed < 0):
-        raise ValueError("require finite noise_scale>=0 and integer seed>=0")
+    """Check inputs, forward model, synthesize observations, invert and report."""
+    if not np.isfinite(noise_scale) or noise_scale < 0:
+        raise ValueError("require finite noise_scale>=0")
+    rng = np.random.default_rng(seed)
+
+    # Inputs: the truth must retain the template's geometry and patch order.
     template_path = template_path.resolve(strict=True)
     truth_path = truth_path.resolve(strict=True)
     executable = executable.resolve(strict=True)
@@ -320,14 +353,13 @@ def run_checkerboard(template_path, truth_path, executable, noise_scale=0.0, see
     forward_predictions = ["work_" + Path(name).name for name in template.gdout]
     inverse_predictions = ["inv" + name for name in forward_predictions]
     synthetic_names = ["input_" + Path(dataset.filename).name for dataset in template.datasets]
-    model_csv, fit_csv = "invwork_resolution_metrics.csv", "invwork_dataset_fit.csv"
     forward_log, inverse_log = "work_forward.log", "invwork_inverse.log"
     forward_outputs = [forward_model, *forward_predictions, "log_" + forward_model,
                        *(f"s{i:02d}_" + forward_model for i in range(1, template.ns + 1))]
     inverse_outputs = [inverse_model, *inverse_predictions, "log_" + inverse_model,
                        *(f"s{i:02d}_" + inverse_model for i in range(1, template.ns + 1))]
     generated = [forward_config, inverse_config, *forward_outputs, *inverse_outputs,
-                 *synthetic_names, forward_log, inverse_log, model_csv, fit_csv]
+                 *synthetic_names, forward_log, inverse_log, MODEL_CSV, FIT_CSV]
     protected = [template_path, truth_path, baseline, executable,
                  *dependencies, *observation_paths]
     # Protect the template's original prediction outputs too, if already present.
@@ -337,6 +369,8 @@ def run_checkerboard(template_path, truth_path, executable, noise_scale=0.0, see
     # Remove only prechecked test artifacts, so no failed phase can reuse old output.
     for name in generated:
         (directory / name).unlink(missing_ok=True)
+
+    # Forward modelling: niter=0 keeps the copied truth slip unchanged.
     shutil.copyfile(truth_path, directory / forward_model)
     (directory / forward_config).write_text(render_template(
         template, 0, [dataset.filename for dataset in template.datasets],
@@ -354,10 +388,14 @@ def run_checkerboard(template_path, truth_path, executable, noise_scale=0.0, see
             raise ValueError("forward output slip differs from the copied checkerboard truth")
     forward_data = [read_prediction(directory / filename, obs)
                     for filename, obs in zip(forward_predictions, observations)]
-    rng = np.random.default_rng(seed)
-    synthetic = [write_synthetic(directory / name, obs, values, tokens, noise_scale, rng)
-                 for name, obs, (values, tokens) in
-                 zip(synthetic_names, observations, forward_data)]
+
+    # Synthetic observations: consume random numbers in dataset/row order.
+    synthetic = []
+    for name, obs, (values, tokens) in zip(synthetic_names, observations, forward_data):
+        data = write_synthetic(directory / name, obs, values, tokens, noise_scale, rng)
+        synthetic.append(data)
+
+    # Inversion: keep the template's iterations, weights and smoothing.
     (directory / inverse_config).write_text(render_template(
         template, template.niter, synthetic_names, inverse_model, inverse_predictions))
     print(f"Inverse: {inverse_config}, niter={template.niter}", flush=True)
@@ -373,26 +411,11 @@ def run_checkerboard(template_path, truth_path, executable, noise_scale=0.0, see
                       for index, (expected, actual) in enumerate(zip(truth, recovered), 1))
     data_rows = fit_metrics(template.datasets, observations, synthetic, predictions,
                             template.datunit)
-    for row in model_rows + data_rows:
-        row.update(noise_scale=noise_scale, seed=seed)
-    for filename, rows in ((model_csv, model_rows), (fit_csv, data_rows)):
-        with (directory / filename).open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
-    for row in model_rows:
-        label = "All segments" if row["scope"] == "all" else f"Segment {row['segment_index']}"
-        values = "; ".join(f"{key}={row[key]:.6g}" if row[key] is not None
-                           else f"{key}=N/A" for key in MODEL_METRICS)
-        print(f"{label}: patches={row['patch_count']}, area={row['area_km2']:.6g} km^2; {values}")
-    for row in data_rows:
-        print(f"{row['dataset_name']}: n={row['observation_count']}, "
-              f"displacement WRMS={row['displacement_wrms_m']:.6g} m")
-    print(f"Resolution metrics: {directory / model_csv}\nDataset fit: {directory / fit_csv}")
+    write_reports(directory, model_rows, data_rows, noise_scale, seed)
     return model_rows, data_rows
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("template", type=Path, help="SDM inversion template (.inp)")
     parser.add_argument("checkerboard", type=Path, help="Existing checkerboard truth model")
@@ -403,3 +426,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0, help="Nonnegative RNG seed (default: 0)")
     args = parser.parse_args()
     run_checkerboard(args.template, args.checkerboard, args.sdm, args.noise_scale, args.seed)
+
+
+if __name__ == "__main__":
+    main()

@@ -39,6 +39,33 @@ Vertical arrows: upward = uplift; downward = subsidence. Units/range/scale use c
 EOF
 }
 
+read_component() {
+    # Output: lat lon observation fit residual. Keep coordinate tokens for pairing.
+    # SDM column 4 excludes correction: fit = column 5 + column 6.
+    awk '
+    function fail(message) { print "Error: " FILENAME ": " message > "/dev/stderr"; exit 1 }
+    NR==1 {next}
+    {
+        if (NF != 6) fail("expected six columns at input line " NR)
+        for (i=1; i<=NF; i++)
+            if ($i !~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/)
+                fail("nonnumeric value at input line " NR)
+        fit=$5+$6
+        printf "%s %s %.17g %.17g %.17g\n", $1,$2,$3,fit,$3-fit
+    }
+    END { if (NR <= 1) fail("no station data") }
+    ' "$1"
+}
+
+vertical_vectors() {
+    # GMT screen angles: 90 = up, 270 = down; zero displacement has no arrow.
+    # The explicit c suffix gives the same cm/unit scale as horizontal arrows.
+    awk -v column="$2" -v scale="${SCALE%c}" 'NR>1 && $column!=0 {
+        printf "%.5f %.5f %d %.10gc\n", $1,$2,($column>0 ? 90 : 270), \
+            sqrt($column*$column)*scale
+    }' "$1"
+}
+
 EXPLICIT_COMPONENTS=0
 EAST_OPT=""; NORTH_OPT=""; UP_OPT=""
 while getopts ':e:n:u:o:h' option; do
@@ -102,30 +129,18 @@ fi
 component_files=()
 for i in "${!files[@]}"; do
     component_files+=("$TMP/component_$i.dat")
-    awk '
-    function fail(message) { print "Error: " FILENAME ": " message > "/dev/stderr"; exit 1 }
-    NR==1 {next}
-    {
-        if (NF != 6) fail("expected six columns at input line " NR)
-        for (i=1; i<=NF; i++)
-            if ($i !~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/)
-                fail("nonnumeric value at input line " NR)
-        print
-    }
-    END { if (NR <= 1) fail("no station data") }
-    ' "${files[$i]}" > "$TMP/component_$i.dat"
+    read_component "${files[$i]}" > "$TMP/component_$i.dat"
 done
 
 # Pair rows explicitly and fail if component coordinates/order do not match.
-# SDM's fourth column excludes correction; fit = column 5 + column 6,
-# and the residual below is observation - fit. All units remain unchanged.
+# Prepared component rows each have five columns. All units remain unchanged.
 paste "${component_files[@]}" | awk -v has_horizontal="$HAS_HORIZONTAL" -v has_up="$HAS_UP" '
 function fail(message) { print "Error: " message > "/dev/stderr"; exit 1 }
 BEGIN { print "# lon lat E_obs N_obs U_obs E_fit N_fit U_fit E_res N_res U_res" }
 {
-    if (NF != (has_horizontal ? 12 : 0) + (has_up ? 6 : 0))
+    if (NF != (has_horizontal ? 10 : 0) + (has_up ? 5 : 0))
         fail("component station counts differ at data row " NR)
-    for (i=7; i<=NF; i+=6)
+    for (i=6; i<=NF; i+=5)
         if ($1 != $i || $2 != $(i+1))
             fail("component station coordinates/order differ at data row " NR)
     if (seen[$1 "," $2]++)
@@ -133,17 +148,15 @@ BEGIN { print "# lon lat E_obs N_obs U_obs E_fit N_fit U_fit E_res N_res U_res" 
     e_obs=n_obs=e_fit=n_fit=e_res=n_res="NaN"
     u_obs=u_fit=u_res="NaN"
     if (has_horizontal) {
-        e_obs=sprintf("%.8g", $3); n_obs=sprintf("%.8g", $9)
-        e_value=$5+$6; n_value=$11+$12
-        e_fit=sprintf("%.8g", e_value); n_fit=sprintf("%.8g", n_value)
-        e_res=sprintf("%.8g", $3-e_value); n_res=sprintf("%.8g", $9-n_value)
+        e_obs=sprintf("%.8g", $3); n_obs=sprintf("%.8g", $8)
+        e_fit=sprintf("%.8g", $4); n_fit=sprintf("%.8g", $9)
+        e_res=sprintf("%.8g", $5); n_res=sprintf("%.8g", $10)
     }
     if (has_up) {
-        offset=has_horizontal ? 12 : 0
+        offset=has_horizontal ? 10 : 0
         u_obs=sprintf("%.8g", $(offset+3))
-        u_value=$(offset+5)+$(offset+6)
-        u_fit=sprintf("%.8g", u_value)
-        u_res=sprintf("%.8g", $(offset+3)-u_value)
+        u_fit=sprintf("%.8g", $(offset+4))
+        u_res=sprintf("%.8g", $(offset+5))
     }
     printf "%.5f %.5f %s %s %s %s %s %s %s %s %s\n", \
         $2,$1,e_obs,n_obs,u_obs,e_fit,n_fit,u_fit,e_res,n_res,u_res
@@ -161,14 +174,8 @@ if (( HAS_HORIZONTAL )); then
     awk 'NR>1 {print $1,$2,$6,$7,0,0,0}' "$MERGED" > "$TMP/fit.xy"
 fi
 if (( HAS_UP )); then
-    # Cartesian GMT vectors use screen angles: 90 = up, 270 = down.
-    # Append c explicitly so length uses the same cm/unit scale as the EN arrows.
-    awk -v scale="${SCALE%c}" 'NR>1 && $5!=0 {
-        printf "%.5f %.5f %d %.10gc\n", $1,$2,($5>0 ? 90 : 270),sqrt($5*$5)*scale
-    }' "$MERGED" > "$TMP/up_observation.xy"
-    awk -v scale="${SCALE%c}" 'NR>1 && $8!=0 {
-        printf "%.5f %.5f %d %.10gc\n", $1,$2,($8>0 ? 90 : 270),sqrt($8*$8)*scale
-    }' "$MERGED" > "$TMP/up_fit.xy"
+    vertical_vectors "$MERGED" 5 > "$TMP/up_observation.xy"
+    vertical_vectors "$MERGED" 8 > "$TMP/up_fit.xy"
 fi
 read -r XREF YREF < <(awk -v region="$R" 'BEGIN {
     split(region, r, "/"); print r[1]+0.08*(r[2]-r[1]), r[3]+0.08*(r[4]-r[3])

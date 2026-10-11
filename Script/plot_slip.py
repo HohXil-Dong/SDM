@@ -34,6 +34,8 @@ REQUIRED = (
     "length_km", "width_km", "slp_am_m", "strike_deg", "dip_deg",
 )
 RADIUS_KM = 6371.0088
+PLANE_SIZE_IN = 8.0          # Longest side of the largest segment's drawing area.
+COLORBAR_FRACTION = 0.65     # Relative to the drawing area's height.
 
 
 def read_model(filename):
@@ -79,8 +81,8 @@ def corners(east, north, depth, length, width, strike, dip):
     """Centre +/- L/2 along strike +/- W/2 down dip, with elevation = -depth.
 
     Strike is clockwise from north; down dip follows the right-hand rule.
-    Each curved-fault patch is approximated by its local planar rectangle,
-    as in the Chen example. Dip angles above 90 degrees remain supported.
+    Each curved-fault patch is approximated by its local planar rectangle.
+    Dip angles above 90 degrees remain supported.
     """
     strike, dip = np.deg2rad([strike, dip])
     along = np.array([np.sin(strike), np.cos(strike), 0.0])
@@ -144,8 +146,8 @@ def write_geometry(filename, segments, vertices):
     print(trace_file)
 
 
-def plot_3d(model, patches, norm, cmap, title, elev, azim):
-    vertices = geographic_vertices(model, patches)
+def plot_3d(model, patches, vertices, norm, cmap, title, elev, azim):
+    """Draw geographic corners with display proportions set by metric corners."""
     fig = plt.figure(figsize=(10, 5.5))
     ax = fig.add_subplot(projection="3d")
     poly = Poly3DCollection(
@@ -176,8 +178,8 @@ def plot_3d(model, patches, norm, cmap, title, elev, azim):
     ax.view_init(elev=elev, azim=azim)
     ax.set_box_aspect((max(ranges[0], 0.12 * ranges[1]),
                        max(ranges[1], 0.12 * ranges[0]), max(ranges[2], 2)))
-    fig.colorbar(poly, ax=ax, location="right", orientation="vertical", shrink=0.65,
-                 pad=0.08, label="Slip (m)")
+    fig.colorbar(poly, ax=ax, location="right", orientation="vertical",
+                 shrink=COLORBAR_FRACTION, pad=0.08, label="Slip (m)")
     return fig
 
 
@@ -200,10 +202,15 @@ def plot_plane(segment, patches, norm, cmap, title, scale):
     xmax, ymax = xy.max(axis=0)
     length, width = xmax - xmin, ymax - ymin
     plot_width, plot_height = length * scale, width * scale
-    fig_width, fig_height = plot_width + 1.45, plot_height + 0.7
+    # Margins, colorbar gap and width are in inches, independent of segment size.
+    left, right, bottom, top = 0.45, 1.0, 0.35, 0.35
+    bar_gap, bar_width = 0.2, 0.12
+    bar_bottom = bottom + (1 - COLORBAR_FRACTION) / 2 * plot_height
+    fig_width = plot_width + (left + right)
+    fig_height = plot_height + (bottom + top)
     fig = plt.figure(figsize=(fig_width, fig_height))
     # Fixed physical margins keep text and colorbars from rescaling the patch grid.
-    ax = fig.add_axes([0.45 / fig_width, 0.35 / fig_height,
+    ax = fig.add_axes([left / fig_width, bottom / fig_height,
                        plot_width / fig_width, plot_height / fig_height])
     poly = PolyCollection(
         patches, array=segment["slp_am_m"], norm=norm, cmap=cmap,
@@ -214,9 +221,9 @@ def plot_plane(segment, patches, norm, cmap, title, scale):
     ax.set_ylim(ymax, ymin)
     ax.set_aspect("equal", adjustable="box")
     ax.set_title(title)
-    cax = fig.add_axes([(0.45 + plot_width + 0.2) / fig_width,
-                        (0.35 + 0.175 * plot_height) / fig_height,
-                        0.12 / fig_width, 0.65 * plot_height / fig_height])
+    cax = fig.add_axes([(left + plot_width + bar_gap) / fig_width,
+                        bar_bottom / fig_height, bar_width / fig_width,
+                        COLORBAR_FRACTION * plot_height / fig_height])
     fig.colorbar(poly, cax=cax, orientation="vertical", label="Slip (m)")
     return fig
 
@@ -262,11 +269,12 @@ def main():
                          "xtick.direction": "out", "ytick.direction": "out"})
 
     patches = patch_vertices(model)
-    write_geometry(args.filename, segments, geographic_vertices(model, patches))
-    fig = plot_3d(model, patches, norm, cmap, args.title, args.elev, args.azim)
+    vertices = geographic_vertices(model, patches)
+    write_geometry(args.filename, segments, vertices)
+    fig = plot_3d(model, patches, vertices, norm, cmap, args.title, args.elev, args.azim)
     save_figure(fig, output.with_name(f"{output.name}_3d.{args.format}"))
     planes = [plane_vertices(segment) for segment in segments]
-    scale = 8 / max(np.ptp(plane.reshape(-1, 2), axis=0).max() for plane in planes)
+    scale = PLANE_SIZE_IN / max(np.ptp(plane.reshape(-1, 2), axis=0).max() for plane in planes)
     for number, (segment, plane) in enumerate(zip(segments, planes, strict=True), 1):
         fig = plot_plane(segment, plane, norm, cmap, args.title, scale)
         save_figure(fig, output.with_name(f"{output.name}_s{number:02d}.{args.format}"))

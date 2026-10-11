@@ -101,27 +101,23 @@ def main():
     parser.add_argument("--skiprows", type=int, default=0, metavar="N",
                         help="Number of physical header lines to skip (default: 0)")
     args = parser.parse_args()
-    if min(args.lat_col, args.lon_col) < 1 or args.lat_col == args.lon_col:
-        parser.error("--lat-col and --lon-col must be positive and different")
+    columns = (args.lat_col, args.lon_col)
     if args.mode == "insar":
-        columns = (args.lat_col, args.lon_col, args.inc_col, args.azi_col)
-        if min(columns) < 1 or len(set(columns)) != 4:
-            parser.error("Latitude, longitude, incidence and azimuth columns "
-                         "must be positive and different")
+        columns += (args.inc_col, args.azi_col)
+    if min(columns) < 1 or len(set(columns)) != len(columns):
+        parser.error("Input columns must be positive and different")
     if args.skiprows < 0:
         parser.error("--skiprows must be nonnegative")
     if (args.output.resolve() == args.input.resolve()
             or (args.output.exists() and args.output.samefile(args.input))):
         raise ValueError("The output must differ from the input coordinate file")
 
+    data = np.loadtxt(args.input, ndmin=2, skiprows=args.skiprows,
+                      usecols=tuple(col - 1 for col in columns))
     if args.mode == "gps":
-        stations = np.loadtxt(args.input, ndmin=2, skiprows=args.skiprows,
-                              usecols=(args.lat_col - 1, args.lon_col - 1))
-        matrix = offset_euler_matrix(stations)
+        matrix = offset_euler_matrix(data)
         rows = "N then E then U"
     else:
-        data = np.loadtxt(args.input, ndmin=2, skiprows=args.skiprows,
-                          usecols=tuple(col - 1 for col in columns))
         matrix = insar_offset_euler_matrix(data[:, :2], data[:, 2:])
         rows = "projected observations in input order"
     np.savetxt(

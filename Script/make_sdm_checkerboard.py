@@ -171,7 +171,8 @@ def main():
         )
         for index, row in zip(indices, updated):
             lines[index] = replace_slip_columns(lines[index], row)
-        nx, ny = (len(np.unique(cells[:, axis])) for axis in (0, 1))
+        nx = len(np.unique(cells[:, 0]))
+        ny = len(np.unique(cells[:, 1]))
         reports.append(
             f"Segment {number:02d}: {len(model)} patches; {nx} x {ny} checker bins; "
             f"high={np.count_nonzero(high)}, low={np.count_nonzero(~high)}"

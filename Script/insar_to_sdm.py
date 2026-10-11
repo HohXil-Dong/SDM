@@ -26,15 +26,16 @@ import numpy as np
 
 
 def sdm_observations(data):
-    """Convert a seven-column table, already arranged as UNE, to SDM."""
+    """Convert lon, lat, displacement, c_up, c_north, c_east, sigma to SDM."""
     if data.ndim != 2 or data.shape[1] != 7 or len(data) == 0:
         raise ValueError("Expected a nonempty seven-column observation table")
     if not np.all(np.isfinite(data)):
         raise ValueError("All input values must be finite")
     if np.any(data[:, 6] <= 0):
         raise ValueError("Measurement errors must be positive")
-    up, north, east = data[:, 3:6].T
-    norm = np.linalg.norm(data[:, 3:6], axis=1)
+    direction_cosines = data[:, 3:6]
+    up, north, east = direction_cosines.T
+    norm = np.linalg.norm(direction_cosines, axis=1)
     # Allow norm error from direction cosines rounded to 0.001.
     if np.any(np.abs(norm - 1.0) > 0.001):
         raise ValueError("Columns 4-6 must be near-unit UNE direction cosines")
@@ -68,8 +69,8 @@ def main():
             or (args.output.exists() and args.output.samefile(args.input))):
         raise ValueError("The output must differ from the input observation file")
 
-    data = np.loadtxt(args.input, ndmin=2, skiprows=args.skiprows,
-                      usecols=(0, 1, 2, args.up - 1, args.north - 1, args.east - 1, 6))
+    columns = (0, 1, 2, args.up - 1, args.north - 1, args.east - 1, 6)
+    data = np.loadtxt(args.input, ndmin=2, skiprows=args.skiprows, usecols=columns)
     observations = sdm_observations(data)
     np.savetxt(args.output, observations,
                fmt=("%10.6f", "%11.6f", "%12.6f", "%10.6f", "%11.6f", "%11.6f"))
