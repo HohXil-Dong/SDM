@@ -1,6 +1,6 @@
 # SDM 科研脚本
 
-这些脚本负责观测准备、棋盘试验和结果绘图，不修改 SDM 科学内核。Python 使用 NumPy；滑动绘图另需 Matplotlib；两个 shell 绘图脚本使用 Bash、awk 和 GMT 6。
+这些脚本负责观测准备、棋盘试验和结果绘图，不修改 SDM 科学内核。Python 使用 NumPy；滑动及速度模型绘图另需 Matplotlib；两个 shell 绘图脚本使用 Bash、awk 和 GMT 6。
 
 ## 脚本与数据流
 
@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | `insar_to_sdm.py` | 方向余弦观测 → 六列 SDM 观测，无表头 | `sdm_observations` |
 | `make_offset_euler.py` | 坐标或六列 SDM 观测 → 六参数修正矩阵，一行表头 | `offset_euler_matrix`、`insar_offset_euler_matrix` |
+| `make_dgrn_model.py` | 用户指定的 CRUST1.0／USTC2.0 和经纬度 → DGRN2020 模型段及速度剖面图 | `crust1_to_dgrn`、`bilinear_profile`、`brocher_density`、`plot_velocity_model` |
 | `make_sdm_checkerboard.py` | SDM 滑动模型 → 同几何的棋盘真值 | `make_checkerboard` |
 | `run_sdm_checkerboard.py` | 反演模板和棋盘真值 → 正演、合成观测、反演、指标 CSV | `write_synthetic`、`resolution_metrics`、`fit_metrics` |
 | `plot_slip.py` | SDM 滑动模型 → 3D 图、分段平面图、角点表、迹线 | `corners`、`plot_3d`、`plot_plane` |
@@ -76,3 +77,36 @@ bash Script/plot_insar_fit.sh -i insar_fit.dat -o figures/insar
 GPS 的 `-e/-n` 须成对；仅 U 也可绘图。未指定分量选项时使用配置中的默认文件；指定后只处理提供的分量。合并表的缺失分量写为 `NaN`。正 U 箭头向上、负 U 向下、零值不画箭头。Slip 所有分段共用英寸／公里比例与全模型色标，3D 横轴为经纬度、深度向下增加。
 
 所有 Python 脚本支持 `--help`，两个 shell 脚本支持 `-h`。调试数值时可直接导入计算函数、检查输入数组和返回值；运行 SDM 出错时查看模板目录中的 `work_forward.log` 或 `invwork_inverse.log`。重跑会删除并重写本次试验的生成文件，比较多个试验时使用独立目录。
+
+## 为 DGRN2020 提取速度模型
+
+依赖 NumPy 和 Matplotlib。四个位置参数依次为 `mode lat lon output`，纬度在前、经度在后，单位为度，经度归一化到 `[-180, 180)`。两种模式都用 `--model` 指定输入：CRUST1 为包含 `crust1.bnds`、`crust1.vp`、`crust1.vs`、`crust1.rho` 的目录；USTC 为采用地表参考深度的五列模型文件。所有相对路径均从启动目录解析。
+
+```bash
+python3 Script/make_dgrn_model.py crust1.0 34.5 98.5 crust1_dgrn.dat \
+    --model Crust/crust1.0
+python3 Script/make_dgrn_model.py ustc2.0 34.25 98.25 ustc2_dgrn.dat \
+    --model Crust/USTClitho2.0/USTClitho2.0.txt
+```
+
+输出含 `#` 注释、模型数据行数及五列 `no depth[km] vp[km/s] vs[km/s] rho[g/cm^3]`。将它替换到 `DGRN2020/InputFile/dgrn2020-example.inp` 的 `GLOBAL MODEL PARAMETERS` 模型段，即原行数 `7` 及后面的模型记录；保留前面的观测深度、距离／源深度采样、积分精度和输出路径，并按研究需要配置。这个 `.dat` 是模型段，不能作为完整 `.inp` 直接交给 DGRN。注释全部从首列 `#` 开始，无空行，与 `skipdoc.f` 兼容；文本使用 UTF-8 以记录用户提供的路径，数值记录仍为 ASCII。注释记录实际输入文件的绝对路径；模型或图片输出均禁止覆盖用户提供的输入模型文件。
+
+同时在输出目录保存 `<output_stem>_velocity.png`：上述例子分别生成 `crust1_dgrn_velocity.png` 和 `ustc2_dgrn_velocity.png`。横轴为速度（km/s），红线为 Vp、蓝线为 Vs；纵轴为相对当地地表的深度（km），从顶部的 0 向下增加。图保留界面跳变，显示至底部半空间的上边界，不人为延长深度范围。梯度段按 DGRN 的连续目标剖面绘制：先线性插值 `rho`、`rho*Vp^2` 和 `rho*Vs^2`，再还原 Vp、Vs；曲线采样仅用于绘图，不参与 DGRN 的子层离散或数值输出。图片直接保存，不打开 GUI 窗口。
+
+**正确性关键约定：**
+
+- [CRUST1.0 官方模型](https://igppweb.ucsd.edu/~gabi/crust1.html)按 1° 单元取值，不对各层界面做空间插值。零基索引为 `ilat = floor(90-lat)`、`ilon = floor(180+lon)`，沿用 `getCN1point.f` 在整数纬度／经度边界取南侧／东侧单元的行为；南极边界归入最南单元，180° 经线归入 −180° 单元。输出注释记录实际单元中心。
+- `crust1.bnds` 为海平面参考的界面海拔 `b_i`，单位 km；向下深度为 `z_i = b_0 - b_i`，层厚为 `b_i - b_(i+1)`。保留有正厚度的水以外各层（包括实际存在的冰层）、原始 Vp/Vs/密度及 Moho 以下地幔。零厚度层无需参数；速度突变界面在同一深度输出上下两侧值，连续界面只写一条。非零厚度水层会报错，避免将流体写入固体内核或擅自改变自由表面。
+- [USTClitho2.0 作者说明](https://github.com/ShouchengHan/USTClitho2.0)区分地表参考和海平面参考模型。用户应通过 `--model` 指定地表参考的五列文本（`lon lat depth Vp Vs`），例如本地的 `USTClitho2.0.txt`，以适配 DGRN 的当地自由表面 `z=0`；文件名不能确定深度参考，需要用户核对。这个本地文本实际范围为经度 72–136°、纬度 18–54°，水平间隔 0.5°，深度节点为 `0, 5, 10, 15, 20, 30, 40, 60, 80, 100, 120, 150 km`；脚本读取用户文件的实际网格和深度，不补造缺失节点。每个深度按经纬度双线性插值 Vp、Vs，禁止域外外推；末节点的参数向下作为常数半空间。不会人为加入 Moho 突变。
+- USTC 的密度按 [Brocher (2005), 式 (1)](https://pubs.usgs.gov/publication/70027956)计算：`rho = 1.6612*Vp - 0.4721*Vp^2 + 0.0671*Vp^3 - 0.0043*Vp^4 + 0.000106*Vp^5`，Vp 用 km/s，rho 用 g/cm³。[SCEC 的实现](https://strike.scec.org/scecpedia/UCVM_Density_Formula)给出相同公式；[USGS 的关系说明](https://pubs.usgs.gov/sir/2023/5061/sir20235061.pdf)给出 1.5–8.5 km/s 的速度范围。先插值 Vp，再计算密度。公式源于地壳岩石经验拟合，应用于上地幔节点也是显式的经验近似，不是 USTC 提供的实测密度。
+- 从代码可确定：`dgmain.f` 将这些单位换算为 SI，并计算 `mu=rho*Vs^2`、`lambda=rho*(Vp^2-2*Vs^2)`。不同深度记录之间，DGRN 实际线性插值的是 **lambda、mu 和 rho**，再由 `dgsublay.f` 按 `dgalloc.f` 的 5% 参数变化尺度拆成均匀子层；并非直接线性插值 Vp/Vs。脚本检查正密度、正速度、`lambda>0`、深度顺序，并拒绝 DGRN 不接受的完全均匀模型。
+
+数据读取和水平插值属于模型处理，重复界面记录、末行半空间及五列输出属于 DGRN 输入约定。将局部三维模型剖面用于 DGRN，是横向均匀、各向同性的一维分层弹性半空间近似；深度和断层几何需采用同一当地地表参考。界面、弹性模量、经验密度及底部半空间会影响静态差分 Green's functions，进而影响 SDM 位移预测与滑动反演。
+
+**可复现性及验证：** CRUST1 输出保留有效层原参数和界面厚度；USTC 输出包含水平插值、密度估算及底部半空间延拓。正式反演前应核对输入文件、坐标与深度参考，并评估经验密度和底部半空间的影响。目录输入方式不改变模型数值或绘图行为。
+
+```bash
+python3 -m unittest discover -s Script -p 'test_make_dgrn_model.py' -v
+```
+
+测试覆盖界面深度／厚度、连续与突变界面、零厚度层、冰／水层、原 Fortran 单元选择、双线性插值、实际 USTC 深度、密度单位／范围、输出格式及绘图速度的模量梯度还原。

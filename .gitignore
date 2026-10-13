@@ -2,7 +2,8 @@
 # Temporary files
 # -------------------------
 tmp/
-Paper
+Paper/
+Crust
 Old/*.rar
 *.tmp
 *.log
